@@ -77,8 +77,9 @@ sec := λ f . λ x . f x
 
 /* runtime */
 
-const VARIABLE_SCOPE = 'field' // {field: '依照變數域分開同名稱的不同變數', child: '不分開變數域、括號越內層越先做'}
-const UNION_MODE = 'left' // {left: '左結合', right: '右結合'}
+const VARIABLE_SCOPE = 'field'; // {field: '依照變數域分開同名稱的不同變數', child: '不分開變數域、括號越內層越先做'}
+const UNION_MODE = 'left'; // {left: '左結合', right: '右結合'}
+const BETA_RESULT = true;
 
 class LambdaRuntimeError extends Error {
 	constructor(message) {
@@ -123,6 +124,9 @@ class Branch {
 		}
 		return item;
 	}
+	childFilter(type) {
+		return [...this.list.filter(item => item instanceof type), ...this.list.map(item => item.childFilter(type)).flat()].filter(item => item);
+	}
 	parse() {
 		try {
 			if (this.list.length == 1) return this.list[0].parse();
@@ -138,6 +142,18 @@ class Branch {
 	}
 	toString() {
 		return `( ${this.list.map(item => item.toString()).join(' ')} )`;
+	}
+}
+
+class LambdaTree extends Branch {
+	constructor(...arg) {
+		super(...arg);
+	}
+	renameAllVar() {
+		this.childFilter(Lambda).map((_, i) => this.childFilter(Lambda)[i]/* refresh object */.renameParam(new Variable(`var_${i + 1}`)));
+	}
+	parse() {
+		return new LambdaTree([super.parse()]);
 	}
 }
 
@@ -165,6 +181,14 @@ class Lambda {
 			return this;
 		}
 	}
+	renameParam(param) {
+		this.calculate = this.calculate.replace(this.parameter, param);
+		this.parameter = param;
+		// return new Lambda(param, this.calculate.replace(this.parameter, param));
+	}
+	childFilter(type) {
+		return [this.calculate instanceof type ? this.calculate : undefined, ...this.calculate.childFilter(type)].filter(item => item);
+	}
 	parse() {
 		return new Lambda(this.parameter, this.calculate.parse());
 	}
@@ -187,6 +211,9 @@ class Variable {
 	apply(value) {
 		return new Branch([this, value]);
 	}
+	childFilter(type) {
+		return [];
+	}
 	parse() {
 		return this;
 	}
@@ -206,6 +233,9 @@ class OperatorApply {
 	apply(value) {
 		return new Branch([this, value]);
 	}
+	childFilter(type) {
+		return [...[this.a, this.b].filter(item => item instanceof type), ...[this.a, this.b].map(item => item.childFilter(type)).flat()].filter(item => item);
+	}
 	parse() {
 		let a = this.a.parse().parse(),
 			b = this.b.parse().parse();
@@ -216,7 +246,7 @@ class OperatorApply {
 	}
 }
 
-function parseLambda(lambdaScript) {
+function toLambdaTree(lambdaScript) {
 	lambdaScript = lambdaScript
 		.replaceAll('(', ' ( ')
 		.replaceAll(')', ' ) ')
@@ -225,7 +255,7 @@ function parseLambda(lambdaScript) {
 		.replace(/^ | $/g, '');
 	lambdaScript = lambdaScript.split(' ');
 	let charPointer = 0;
-	let parseTree = new Branch();
+	let parseTree = new LambdaTree();
 	let branchPointer = [];
 	let lambdaLayerCounter = 0;
 	while (charPointer < lambdaScript.length) {
@@ -261,18 +291,20 @@ function parseLambda(lambdaScript) {
 
 /* main */
 
-let lambdaScript = `
-ture = λ x . λ y . x
+const lib = `
+# boolean
+true = λ x . λ y . x
 false = λ x . λ y . y
-and = λ p . λ q . p q false
-or = λ p . λ q . p true q
-not = λ p . p false true
-if = λ p . λ x . λ y . p x y
-isZero = λ n . n ( λ x . false ) true
-cons = λ x . λ y . λ p . if p x y
-car = λ x . x true
-cdr = λ x . x false
+# boolean function
+and = λ p . λ q . ( p q false )
+or = λ p . λ q . ( p true q )
+not = λ p . ( p false true )
+if = λ p . λ x . λ y . ( p x y )
+cons = λ x . λ y . λ p . ( if p x y )
+car = λ x . ( x true )
+cdr = λ x . ( x false )
 
+# integer
 0 = λ f . λ x . ( x )
 1 = λ f . λ x . ( f x )
 2 = λ f . λ x . ( f ( f x ) )
@@ -284,14 +316,30 @@ cdr = λ x . x false
 8 = λ f . λ x . ( f ( f ( f ( f ( f ( f ( f ( f x ) ) ) ) ) ) ) )
 9 = λ f . λ x . ( f ( f ( f ( f ( f ( f ( f ( f ( f x ) ) ) ) ) ) ) ) )
 10 = λ f . λ x . ( f ( f ( f ( f ( f ( f ( f ( f ( f ( f x ) ) ) ) ) ) ) ) ) )
-11 = λ f . λ x . ( f ( f ( f ( f ( f ( f ( f ( f ( f ( f ( f x ) ) ) ) ) ) ) ) ) ) )
-12 = λ f . λ x . ( f ( f ( f ( f ( f ( f ( f ( f ( f ( f ( f ( f x ) ) ) ) ) ) ) ) ) ) ) )
+# integer function
+succ = λ n . λ f . λ x . ( f ( n f x ) )
+plus = λ m . λ n . λ f . λ x . ( m f ( n f x ) )
+mult = λ m . λ n . λ f . ( m ( n f ) )
+# mult = λ m . λ n . λ f . λ x . ( m ( n f ) x ) # actually
+isZero = λ n . ( n ( λ x . false ) true )
+powr = λ m . λ n . ( n m )
+# powr = λ m . λ n . λ f . λ x . ( n m f x ) # actually
+comb = λ q . λ w . ( ( plus ( mult 10 q ) ) w )
+list = λ h . ( λ t . ( λ s . ( ( s h ) t ) ) )
+head = λ r . ( r true )
+tail = λ k . ( k false )
+#pred = λ o . ( tail ( ( o ( λ p . ( ( list ( succ ( head p ) ) ) ( head p ) ) ) ) ( ( list 0 ) 0 ) ) )
+`;
 
-succ = λ n . λ f . λ x . f ( n f x )
-# pred = λ n . λ f . λ x . ( n ( λ g . λ h . h ( g f ) ) ) ( λ u . x ) ( λ u . u )
-pred = λ n . n ( λ g . λ k . ( g 1 ) ( λ u . plus ( g k ) 1 ) k ) ( λ l . 0 ) 0
-plus = λ m . λ n . λ f . λ x . m f ( n f x )
-mult = λ m . λ n . λ f . m ( n f )
+let lambdaScript = `
+${lib}
+
+# pred = λ n . λ f . λ x . n ( λ g . λ h . h ( g f ) ) ( λ u . x ) ( λ u . u )
+# pred = λ n . n ( λ g . λ k . ( g 1 ) ( λ u . plus ( g k ) 1 ) k ) ( λ l . 0 ) 0
+# upar = λ a . λ m . λ n . ( a ( λ y . λ n . n y m ) ( λ f . λ x . m f ( m f ) x ) )
+# upar = λ a . λ m . λ n . ( a ( λ y . λ n . n y m ) ( λ f . λ x . m f ( m f ) x ) )
+# equ = λ f . λ x . f
+# tai = λ a . λ m . λ n . ( a ( λ y . λ n . ( n y m ) ) ( λ f . λ x . ( m f ( m f ) x ) ) )
 
 # succ ( succ ( succ ( succ ( succ 0 ) ) ) )
 # 5
@@ -299,35 +347,59 @@ mult = λ m . λ n . λ f . m ( n f )
 # plus 2 3
 # 5
 
-plus ( mult 2 3 ) 5
+# plus ( mult 2 3 ) 5
 # 11
 
-# if true 2 5
-# ( ( true 2 ) 5 )
+# if ( true ) ( plus 3 4 ) ( mult 2 6 )
+# 7
+
+powr 2 4
 `;
 
-function main() {
+function run(lambdaScript, debug = false) {
 	let lambdaLines = lambdaScript.replaceAll('\r', '').split('\n').filter(line => line[0] !== '#' && line.replaceAll(' ', '') !== '');
 	lambdaScript = lambdaLines.pop();
 	let lambdaEntries = lambdaLines.map(line => line.split(' = ')).filter(pair => pair.length == 2)
+	function replaceVariable(text, variable, value) {
+		return text.replaceAll(new RegExp(`(?<= )${variable}(?= )|^${variable}(?= )|(?<= )${variable}$`, 'g'), ` ( ${value} ) `);
+	}
 	for (let i = 0; i < lambdaEntries.length; i++) {
 		let [variable, value] = lambdaEntries[i];
-		lambdaScript = lambdaScript.replaceAll(variable, ` ( ${value} ) `);
-		for (let j = i+1; j < lambdaEntries.length; j++) {
-			lambdaEntries[j][1] = lambdaEntries[j][1].replaceAll(variable, ` ( ${value} ) `);
+		lambdaScript = replaceVariable(lambdaScript, variable, value);
+		for (let j = i + 1; j < lambdaEntries.length; j++) {
+			lambdaEntries[j][1] = replaceVariable(lambdaEntries[j][1], variable, value);;
 		}
 	}
 	
-	let lambdaTree = parseLambda(lambdaScript);
-	let result = lambdaTree.parse().toString();
-	let betaEntries = lambdaEntries.map(pair => [pair[0], parseLambda(pair[1]).parse().toString()]);
-	let betaResult = result;
-	betaEntries.reverse().forEach(([variable, value]) => {
-		betaResult = betaResult.replaceAll(value, variable);
-	});
+	let tree = toLambdaTree(lambdaScript);
+	tree.renameAllVar();
+	let result = tree.parse();
+	let betaEntries = lambdaEntries.map(pair => [pair[0], toLambdaTree(pair[1]).parse().toString()]);
+	
+	if (debug) {
+		console.log('%c------------------------------------------------------------------\n', 'color: yellow; background: transparent;');
+		console.log(lambdaScript);
+		console.log('%ctree: \n', 'color: yellow; background: transparent;', tree);
+		console.log('%ctree string: \n', 'color: yellow; background: transparent;', tree.toString());
+		console.log('%cresult: \n', 'color: yellow; background: transparent;', result.toString());
+	}
 
-	console.log(lambdaTree.toString());
-	console.log(result);
-	console.log(betaResult);
+	if (BETA_RESULT || !debug) {
+		result.renameAllVar();
+		let betaResult = result.toString();
+		betaEntries.reverse().forEach(([variable, value]) => {
+			let tree = toLambdaTree(value).parse();
+			tree.renameAllVar();
+			value = tree.toString();
+			betaResult = betaResult.replaceAll(value, variable);
+		});
+		if (/\( \( λ var_1 \. \( λ var_2 \. (\( var_1 )+var_2(( \))+) \) \) \) \)/.test(betaResult)) {
+			betaResult = /\( \( λ var_1 \. \( λ var_2 \. (\( var_1 )+var_2(( \))+) \) \) \) \)/.exec(betaResult)[2].split(' ').length.toString();
+		}
+		if (debug) {
+			console.log('%cbeta result: \n', 'color: yellow; background: transparent;', betaResult);
+		}
+		return betaResult;
+	}
 }
-main();
+run(lambdaScript, true);
